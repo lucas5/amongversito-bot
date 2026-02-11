@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from dotenv import load_dotenv
 import asyncio
 
@@ -66,7 +66,8 @@ async def on_ready():
         iniciar_votacao_automatica.start()
     
     print(f'⏰ Agendador automático ativado!')
-    print(f'📅 Próxima votação: Todo dia 1 de cada mês às 00:00')
+    print(f'📅 Verificação diária: Todo dia às 3:00 AM UTC')
+    print(f'🗳️ Votação inicia: Apenas no dia 1 de cada mês')
 
 # Comando de emergência para sincronizar (usar apenas uma vez)
 @bot.command()
@@ -531,105 +532,110 @@ async def help_slash(interaction: discord.Interaction):
 # SISTEMA DE AGENDAMENTO AUTOMÁTICO
 # ============================================
 
-@tasks.loop(hours=1)
+@tasks.loop(time=time(hour=3, minute=0))  # Roda 1x por dia às 3:00 AM UTC
 async def iniciar_votacao_automatica():
-    """Verifica a cada hora se é dia 1 do mês às 00:00"""
+    """Verifica diariamente às 3 AM se é dia 1 do mês para iniciar votação"""
     now = datetime.utcnow()
     
-    if now.day == 1 and now.hour == 0:
-        print(f"📅 Dia 1 detectado! Iniciando votação automática...")
-        
-        data = load_data()
-        
-        if data.get('poll_message_id'):
-            print(f"⚠️ Já existe uma votação ativa. Pulando...")
-            return
-        
-        canal_id = os.getenv('CANAL_VOTACAO_ID')
-        
-        if not canal_id:
-            print(f"❌ CANAL_VOTACAO_ID não configurado no .env!")
-            return
-        
-        canal = bot.get_channel(int(canal_id))
-        
-        if not canal:
-            print(f"❌ Canal de votação não encontrado!")
-            return
-        
-        if not data['participantes']:
-            print(f"⚠️ Sem participantes cadastrados. Votação cancelada.")
-            return
-        
-        if len(data['ja_escolhidos']) >= len(data['participantes']):
-            print(f"🔄 Todos já foram escolhidos! Resetando lista...")
-            data['ja_escolhidos'] = []
-            save_data(data)
-        
-        candidatos = {
-            user_id: info 
-            for user_id, info in data['participantes'].items() 
-            if user_id not in data['ja_escolhidos']
-        }
-        
-        if not candidatos:
-            print(f"❌ Nenhum candidato disponível!")
-            return
-        
-        candidatos_lista = list(candidatos.items())[:10]
-        
-        pergunta = "🌌 VOTAÇÃO MENSAL DO MULTIVERSO - Quem será o próximo escolhido?"
-        
-        poll = discord.Poll(
-            question=discord.PollMedia(text=pergunta),
-            duration=timedelta(hours=24)
+    # Verifica se é dia 1 do mês
+    if now.day != 1:
+        print(f"⏰ Verificação diária às 3 AM - Hoje é dia {now.day}, aguardando dia 1...")
+        return
+    
+    print(f"📅 Dia 1 detectado! Iniciando votação automática...")
+    
+    data = load_data()
+    
+    if data.get('poll_message_id'):
+        print(f"⚠️ Já existe uma votação ativa. Pulando...")
+        return
+    
+    canal_id = os.getenv('CANAL_VOTACAO_ID')
+    
+    if not canal_id:
+        print(f"❌ CANAL_VOTACAO_ID não configurado no .env!")
+        return
+    
+    canal = bot.get_channel(int(canal_id))
+    
+    if not canal:
+        print(f"❌ Canal de votação não encontrado!")
+        return
+    
+    if not data['participantes']:
+        print(f"⚠️ Sem participantes cadastrados. Votação cancelada.")
+        return
+    
+    if len(data['ja_escolhidos']) >= len(data['participantes']):
+        print(f"🔄 Todos já foram escolhidos! Resetando lista...")
+    if len(data['ja_escolhidos']) >= len(data['participantes']):
+        print(f"🔄 Todos já foram escolhidos! Resetando lista...")
+        data['ja_escolhidos'] = []
+        save_data(data)
+    
+    candidatos = {
+        user_id: info 
+        for user_id, info in data['participantes'].items() 
+        if user_id not in data['ja_escolhidos']
+    }
+    
+    if not candidatos:
+        print(f"❌ Nenhum candidato disponível!")
+        return
+    
+    candidatos_lista = list(candidatos.items())[:10]
+    
+    pergunta = "🌌 VOTAÇÃO MENSAL DO MULTIVERSO - Quem será o próximo escolhido?"
+    
+    poll = discord.Poll(
+        question=discord.PollMedia(text=pergunta),
+        duration=timedelta(hours=24)
+    )
+    
+    for user_id, info in candidatos_lista:
+        opcao_texto = f"{info['apelido']}"
+        poll.add_answer(text=opcao_texto[:55])
+    
+    embed = discord.Embed(
+        title="🎉 VOTAÇÃO MENSAL AUTOMÁTICA INICIADA!",
+        description=(
+            "**🗓️ É DIA 1! Hora da votação mensal!**\n\n"
+            "O vencedor terá seu apelido aplicado a **TODOS** do servidor!\n\n"
+            "⏰ **Duração:** 24 horas (encerramento automático)\n"
+            "🗳️ **Vote na enquete abaixo!**\n"
+        ),
+        color=0xFF00FF
+    )
+    
+    for i, (user_id, info) in enumerate(candidatos_lista, 1):
+        embed.add_field(
+            name=f"",
+            value=f"{i}. **{info['apelido']}**",
+            inline=False
         )
+    
+    fim_votacao = datetime.utcnow() + timedelta(hours=24)
+    embed.set_footer(text=f"Sistema automático • Encerra em 24h")
+    embed.timestamp = fim_votacao
+    
+    try:
+        await canal.send(embed=embed)
+        message = await canal.send(poll=poll)
         
-        for user_id, info in candidatos_lista:
-            opcao_texto = f"{info['apelido']}"
-            poll.add_answer(text=opcao_texto[:55])
+        data['poll_message_id'] = message.id
+        data['poll_channel_id'] = canal.id
+        data['poll_candidatos'] = candidatos_lista
+        data['poll_inicio'] = datetime.utcnow().isoformat()
+        data['poll_fim_programado'] = fim_votacao.isoformat()
         
-        embed = discord.Embed(
-            title="🎉 VOTAÇÃO MENSAL AUTOMÁTICA INICIADA!",
-            description=(
-                "**🗓️ É DIA 1! Hora da votação mensal!**\n\n"
-                "O vencedor terá seu apelido aplicado a **TODOS** do servidor!\n\n"
-                "⏰ **Duração:** 24 horas (encerramento automático)\n"
-                "🗳️ **Vote na enquete abaixo!**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━"
-            ),
-            color=0xFF00FF
-        )
+        save_data(data)
         
-        for i, (user_id, info) in enumerate(candidatos_lista, 1):
-            embed.add_field(
-                name=f"",
-                value=f"{i}. Apelido: **{info['apelido']}**",
-                inline=False
-            )
+        print(f"✅ Votação automática iniciada com sucesso!")
+        print(f"📊 Candidatos: {len(candidatos_lista)}")
+        print(f"⏰ Encerramento programado: {fim_votacao}")
         
-        fim_votacao = datetime.utcnow() + timedelta(hours=24)
-        embed.set_footer(text=f"Sistema automático • Encerra em 24h")
-        embed.timestamp = fim_votacao
-        
-        try:
-            await canal.send(embed=embed)
-            message = await canal.send(poll=poll)
-            
-            data['poll_message_id'] = message.id
-            data['poll_channel_id'] = canal.id
-            data['poll_candidatos'] = candidatos_lista
-            data['poll_inicio'] = datetime.utcnow().isoformat()
-            data['poll_fim_programado'] = fim_votacao.isoformat()
-            
-            save_data(data)
-            
-            print(f"✅ Votação automática iniciada com sucesso!")
-            print(f"📊 Candidatos: {len(candidatos_lista)}")
-            print(f"⏰ Encerramento programado: {fim_votacao}")
-            
-        except Exception as e:
-            print(f"❌ Erro ao iniciar votação automática: {e}")
+    except Exception as e:
+        print(f"❌ Erro ao iniciar votação automática: {e}")
 
 @tasks.loop(minutes=5)
 async def verificar_votacao():
